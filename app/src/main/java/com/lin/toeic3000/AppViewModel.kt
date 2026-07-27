@@ -10,6 +10,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import java.time.LocalDate
 import java.util.Locale
 
 data class AppState(
@@ -20,22 +21,26 @@ data class AppState(
     val answered: Int = 0,
     val correct: Int = 0,
     val darkMode: Boolean = false,
-    val loading: Boolean = true
+    val loading: Boolean = true,
+    val ttsReady: Boolean = false
 )
 
-class AppViewModel(application: Application) : AndroidViewModel(application), TextToSpeech.OnInitListener {
-    private val prefs = application.getSharedPreferences("toeic_v4", 0)
-    private val _state = MutableStateFlow(AppState(
-        favorites = readSet("favorites"),
-        mistakes = readSet("mistakes"),
-        studied = readSet("studied"),
-        answered = prefs.getInt("answered", 0),
-        correct = prefs.getInt("correct", 0),
-        darkMode = prefs.getBoolean("dark", false)
-    ))
+class AppViewModel(application: Application) :
+    AndroidViewModel(application), TextToSpeech.OnInitListener {
+
+    private val prefs = application.getSharedPreferences("toeic_pet_v6", 0)
+    private val _state = MutableStateFlow(
+        AppState(
+            favorites = readSet("favorites"),
+            mistakes = readSet("mistakes"),
+            studied = readSet("studied"),
+            answered = prefs.getInt("answered", 0),
+            correct = prefs.getInt("correct", 0),
+            darkMode = prefs.getBoolean("dark", false)
+        )
+    )
     val state: StateFlow<AppState> = _state.asStateFlow()
     private val tts = TextToSpeech(application, this)
-    private var ttsReady = false
 
     init {
         viewModelScope.launch {
@@ -45,13 +50,26 @@ class AppViewModel(application: Application) : AndroidViewModel(application), Te
     }
 
     override fun onInit(status: Int) {
-        if (status == TextToSpeech.SUCCESS) {
-            ttsReady = tts.setLanguage(Locale.US) >= 0
+        val ready = status == TextToSpeech.SUCCESS &&
+            tts.setLanguage(Locale.US) >= TextToSpeech.LANG_AVAILABLE
+        if (ready) {
+            tts.setSpeechRate(0.85f)
+            tts.setPitch(1.0f)
         }
+        _state.value = _state.value.copy(ttsReady = ready)
     }
 
     fun speak(text: String) {
-        if (ttsReady) tts.speak(text, TextToSpeech.QUEUE_FLUSH, null, "toeic")
+        if (_state.value.ttsReady) {
+            tts.speak(text, TextToSpeech.QUEUE_FLUSH, null, "toeic-$text")
+        }
+    }
+
+    fun dailyWord(): Word? {
+        val words = _state.value.words
+        if (words.isEmpty()) return null
+        val index = (LocalDate.now().toEpochDay() % words.size).toInt()
+        return words[index]
     }
 
     fun toggleFavorite(id: Int) {
@@ -60,6 +78,12 @@ class AppViewModel(application: Application) : AndroidViewModel(application), Te
         }
         saveSet("favorites", next)
         _state.value = _state.value.copy(favorites = next)
+    }
+
+    fun markStudied(id: Int) {
+        val next = _state.value.studied + id
+        saveSet("studied", next)
+        _state.value = _state.value.copy(studied = next)
     }
 
     fun recordAnswer(word: Word, correctAnswer: Boolean) {
@@ -73,8 +97,10 @@ class AppViewModel(application: Application) : AndroidViewModel(application), Te
         saveSet("mistakes", mistakes)
         prefs.edit().putInt("answered", answered).putInt("correct", correct).apply()
         _state.value = _state.value.copy(
-            studied = studied, mistakes = mistakes,
-            answered = answered, correct = correct
+            studied = studied,
+            mistakes = mistakes,
+            answered = answered,
+            correct = correct
         )
     }
 
@@ -86,8 +112,11 @@ class AppViewModel(application: Application) : AndroidViewModel(application), Te
     fun resetProgress() {
         prefs.edit().clear().apply()
         _state.value = _state.value.copy(
-            favorites = emptySet(), mistakes = emptySet(), studied = emptySet(),
-            answered = 0, correct = 0
+            favorites = emptySet(),
+            mistakes = emptySet(),
+            studied = emptySet(),
+            answered = 0,
+            correct = 0
         )
     }
 
@@ -101,5 +130,6 @@ class AppViewModel(application: Application) : AndroidViewModel(application), Te
     override fun onCleared() {
         tts.stop()
         tts.shutdown()
+        super.onCleared()
     }
 }
